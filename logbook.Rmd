@@ -20,7 +20,7 @@ library(reshape2)
 library(scales)
 library(pander)
 library(tidyverse)
-library(ggdendro)
+library(smotefamily)
 ```
 
 
@@ -100,7 +100,7 @@ The code below changes the ID and allow to join the two data sets on this variab
 n <- p_data$RefSeq_accession_number
 
 #Get all but first 3 columns
-proteomes <- as.data.frame(t(p_data[,4:83]))
+proteomes <- as.data.frame(t(p_data[,4:86]))
 colnames(proteomes) <- n
 
 proteomes <- cbind(rownames(proteomes), data.frame(proteomes, row.names=NULL))
@@ -126,8 +126,8 @@ proteomes_all <- proteomes_all[!duplicated(proteomes_all$Complete.TCGA.ID),]
 
 ```{r merge two matrix}
 #Merge the Tumor column from clinic data
-merged_file <- merge(clinic, proteomes_all, BY = "Complete.TCGA.ID")
-merged_file <- merged_file[-c(2:6, 8:30)]
+proteomes_new <- merge(clinic, proteomes_all, BY = "Complete.TCGA.ID")
+proteomes_new <- proteomes_new[-c(2:6, 8:30)]
 ```
 
 
@@ -138,7 +138,7 @@ get filtered out.
 
 ```{r view missing data}
 
-na_count <- colSums(is.na(proteomes_all)) / nrow(proteomes_all) * 100
+na_count <- colSums(is.na(proteomes_new)) / nrow(proteomes_new) * 100
 
 na_count <- as.data.frame(na_count)
 
@@ -162,15 +162,15 @@ with the computed mean value.
 ```{r removing missing data}
 
 
-# remove variable with >20% missing data
-proteomes_all <- merged_file[ , colSums(is.na(merged_file))  / nrow(proteomes_all) < 0.20]
-
-
-
-
-for (i in which(sapply(proteomes_all, is.numeric))) {
-    proteomes_all[is.na(proteomes_all[, i]), i] <- mean(proteomes_all[, i], na.rm = TRUE)
-}
+# # remove variable with >20% missing data
+# proteomes_all <- merged_file[ , colSums(is.na(merged_file))  / nrow(proteomes_all) < 0.20]
+# 
+# 
+# 
+# 
+# for (i in which(sapply(proteomes_all, is.numeric))) {
+#     proteomes_all[is.na(proteomes_all[, i]), i] <- mean(proteomes_all[, i], na.rm = TRUE)
+# }
 
 
 
@@ -179,7 +179,7 @@ for (i in which(sapply(proteomes_all, is.numeric))) {
 ```
 
 ```{r perc missing data, echo=F}
-cat("Amount of proteomes with more than 20% missing data :",length(na_count[na_count>20]))
+# cat("Amount of proteomes with more than 20% missing data :",length(na_count[na_count>20]))
 
 ```
 
@@ -194,9 +194,9 @@ Outliers create noise and could effect the result in the wrong way.
 
 ```{r outliers, warning = FALSE}
 # change the format from wide to long
-long <- melt(proteomes_all) 
+prot_long <- melt(proteomes_new) 
 
-ggplot(long, aes(x=Complete.TCGA.ID, y = value)) + 
+ggplot(prot_long, aes(x=Complete.TCGA.ID, y = value)) + 
   geom_boxplot() +
   facet_wrap(~Tumor) +
   theme_classic() +
@@ -225,7 +225,7 @@ The proportional representation of patients in every tumor group is displayed in
 
 
 
-count_t <- proteomes_all %>%
+count_t <- proteomes_new %>%
           select(Tumor) %>%
           group_by(Tumor) %>%
           count()
@@ -270,132 +270,77 @@ This could have effect on the accuracy of predicting the tumor group for the min
 The data doesn't need a transformation. The expression values already exists of log2 iTRAQ ratios. Unused instances and non-informative variables are filtered out the dataset.      
 
 <!-- The data is already normalized. https://www.sciencedirect.com/science/article/pii/S2212492617301744 -->
+  
+  
+# Machine learning
 
-# Results
-The results contains graphs and tables which help to visualize the data. The aim is to explore the data and to make the data ready for machine learning. experiments. 
+
+# Determine quality metrics relevant for your research
+For this project a confusion matrix will be used also known as an error rate matrix. The accuracy could lead to misleading results because the dataset is unevenly represented. The confusion matrix provides a more detailed analysis. Utilizing the confusion table with true positive, false negative, false positive and true negative values offers other statistical calculations. For example the False discovery rate and the True positive rate are an option to use. This is a way to evaluate the results. 
+
+The speed isn't an important aspect. Every patient holds around 10.000 expression values. The algorithm needs to analyze these carefully. 
+Because the data isn't evenly represented, this needs to be addressed.
+The performance will increase when the data is evenly represented.
+
+## Investigate performance of ML algorithms
+
+Weka version 3.8.5
+settings:
+cross validation 10 folds
+cost-sensitive 1.
+```{r write dataset}
+#write clean dataset and use it in Weka
+write.csv(test_data, "data/proteomes.csv")
+```
 
 
-The histogram gives a clear view about the data distribution. This could help investigate the difference in expression values between the groups.
-But this doesn't imply when the variation is high within the groups. 
-```{r Histogram, echo= F}
 
-ggplot(long, aes(x=value)) +
-  geom_histogram(breaks=seq(-10, 10), 
-                 col="black", fill= "#9c5708") +
-  ggtitle("Histogram of log2 iTRAQ ratios")+
-  ylab("Frequency") +
-  xlab("Log2 iTRAQ ratios") +
-  theme(panel.border = element_blank(),
-  panel.grid.major = element_blank(),
-  panel.grid.minor = element_blank(),
-  axis.line = element_line(colour = "black"))
+```{r adding healthy patients dataset}
+healthy_patients <- proteomes_all[78:80,]
+stage <- rep("T0", 3)
+healthy_patients$Tumor <- stage
+
+
+
+proteomes_new <- rbind(proteomes_new, healthy_patients)
+
+
 
 ```
-**Figure 1.** *Normalized distribution log2 iTRAQ ratios for every protein.* 
-The bins between 0 and -10 are higher in comparison with the bins between 0 and 10. So there are probably more downregulated proteins instead of upregulated proteins.  
+
+
+```{r}
+
+
+res <- list()
+
+for (name in colnames(proteomes_new)[3:(ncol(proteomes_new)-1)]) {
+  f <- paste0(name, ' ~ Tumor')
+  pval <- kruskal.test(formula = formula(f), data=proteomes_new)$p.value
+  if(pval < 0.05){
+    res[[name]] <- kruskal.test(formula = formula(f), data=proteomes_new)$p.value
+  }
+}
 
 
 
 
-The aim of the table is to give a quick view of the amount of records from the dataset before and after the filtering. This is a way to keep the transparency of the research. 
-```{r table, echo=F}
-
-overview_table <- data.frame(
-                  status = c("Before filter", "After filter"),
-                  records = c(ncol(p_data), nrow(proteomes_all)),
-                  values = c(nrow(p_data), ncol(proteomes_all))
-)
-
-overview_table <- hux(overview_table)
-overview_table %>% 
-      set_all_padding(2) %>% 
-      set_outer_padding(0) %>% 
-      set_number_format(0) %>% 
-      set_bold(row = 1, col = everywhere) %>% 
-      set_bottom_border(row = 1, col = everywhere) %>% 
-      set_width(0.8) %>% 
-      set_position("left") %>%
-      set_caption("The number of columns and rows 
-                  before and after the filtering") %>% 
-      set_caption_pos("bottom") 
 
 ```
-The dataset started with 86 records. The first columns existed out RefSeq_accession_number for every protein. The RefSeq accession number was being stored in a variable. The goal was to make the observations into rows instead of columns. The second column contained gene symbol and the third column gene name. Both the columns were left out of the dataset for the research. After filtering out the unused columns the dataset exists of 83 records. The dataset included three replicates and three healthy patients. 
-The last six records were filtered out to ready the dataset for machine learning experiments.
-
-The proteins were selected based on the number of missing values. Every protein having more than twenty percent of missing values get selected out.
-All proteins with less than twenty percent of missing values, still has NA-values. The remaining NA-values are replaced with the mean. Roughly 2500 proteins didn't pass the filter.
 
 
-The pie chart shows the data ratio between the four tumor groups.
-The proportional representation of patients in every tumor group is displayed in the frame. 
-```{r class distribution, echo=F}
 
-count_t <- proteomes_all %>%
-          select(Tumor) %>%
-          group_by(Tumor) %>%
-          count()
-         
-colnames(count_t)[2] <- "frequentie"
-pct <- paste(round(count_t$frequentie / sum(count_t$frequentie) * 100, digits = 2), "%")
+```{r}
 
-blank_theme <- theme_minimal()+
-  theme(
-  axis.title.x = element_blank(),
-  axis.title.y = element_blank(),
-  panel.border = element_blank(),
-  panel.grid=element_blank(),
-  axis.ticks = element_blank(),
-  plot.title=element_text(size=14, face="bold")
-  )
+#Eventueel tumor column omzetten naar factor. R vindt dit fijner
+DEGS <- names(res)
+imp_col <- c("Complete.TCGA.ID", "Tumor")
+proteomes_degs <- proteomes_new[c(imp_col, DEGS)]
 
-ggplot(count_t, aes(x="", y= frequentie, fill= Tumor )) +
-        geom_bar(stat="identity", width=1) +
-        coord_polar("y", start=0) +
-        geom_col() +
-        blank_theme +
-        theme_void() +
-        geom_text(aes(label = pct),
-              position = position_stack(vjust = 0.4)) +
-        ggtitle("Proportion patients in 4 tumor groups")
+write.csv(proteomes_degs, "data/proteomes_degs.csv")
+
+
 ```
-**Figure 2.** *Representation patients in percentages for every tumor group. *
-
-The group T2 exists of 66.23 % of the patients.
-The group T1, T3 and T4 have combined less patients in comparison with group T2. This could have effect on the accuracy of predicting the tumor group for the less represented tumor groups.
-
-
-
-
-
-# Discussion & Conclusion
-
-The exploratory data analyses helps to get a better view of the quality of the dataset. The research provides a high-quality dataset. The delivered dataset "77_cancer_proteomes_CPTAC_itraq.csv" contained 83 patients. The file included three healthy patients at the end of the file and three duplicates. Both were filtered out of the file. To predict the stage of breast cancer based on the protein expression values there's no need to keep the three healthy patients. The duplicates were removed because they give more weight in the training. This could effect the accuracy to predict the cancer stage. If the quantity of duplicates is equal to the quantity of patients there would be no major difference between the tumor groups.    
-
-The last step to improve the quality is to look for missing values for every protein. If a single protein contains more than twenty percent missing values, the protein gets filtered out. After this filter all the remaining missing values were replaced with the mean value. The dataset doesn't have many outliers so the mean is chosen to replace the missing values.  
-
-Figure 1 indicates there are more downregulated proteins instead of upregulated proteins. 
-
-Figure 2 shows the representation for every tumor stage. All the 77 patients are divided based on the tumor stage. Tumor stage 1, stage 3
-and tumor stage 4 have combined less patients in comparison with tumor 
-stage 2. This could lead to an algorithm with a lower accuracy to predict 
-the tumor stage 1, stage 3 and stage 4 because you have less data.
-
-Overall the quality of the data was great. The only thing to hold account to is the representation for every tumor group. Tumor group 2 has a lot more data available. 
-
-
-# Future research
-For the future research, filter twenty five or thirty percent of the missing values instead of twenty percent. This could improve the performance as long as there is enough data available. 
-
-Second, It's really important that every tumor group is evenly represented.
-Getting more data for the tumor group 1, group 3 and group 4 would impact the accuracy of prediction.
-
-Last, instead of leaving the three healthy patients out of the dataset add more healthy patients. So the model could recognize the difference in expression value between the healthy person and the person with breast cancer.  
-
-
-
-
-<!-- It is common that genetic datasets exhibit cases where n, the number of observations is larger than the p, the number or predictors. When p >n, there is no longer a unique least squares coefficient estimate. Often when p>n, high variance and overfitting are a major concern in this setting. Thus, simple, highly regularized approaches often become the methods of choice. To address this issue, there are many techniques (Subset selection), (Lasso and Ridge) and (Dimension reduction) to exclude irrelevant variables from a regression or a dataset. -->
 
 
 
